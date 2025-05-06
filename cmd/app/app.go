@@ -2,28 +2,32 @@ package app
 
 import (
 	"ivanjabrony/refstudy/internal/controller"
+	"ivanjabrony/refstudy/internal/logger"
 	"ivanjabrony/refstudy/internal/repository"
 	"ivanjabrony/refstudy/internal/usecase"
-	"log/slog"
+	"log"
 	"os"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jmoiron/sqlx"
+	"github.com/go-playground/validator/v10"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type App struct {
 	Router *gin.Engine
-	db     *sqlx.DB
+	db     *pgxpool.Pool
 }
 
-func New(db *sqlx.DB) *App {
-	repositories := initRepositories(db)
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: getLogLevel()}))
-	usecases := initUsecases(repositories)
+func New(db *pgxpool.Pool) *App {
+	logger := logger.New(getLogLevel(), logger.LogFormatText)
+	repositories := mustInitRepositories(db, logger)
+	usecases := mustInitUsecases(repositories, logger)
+	validator := validator.New(validator.WithRequiredStructEnabled())
 
 	router := controller.SetupRouter(
 		logger,
 		usecases.user,
+		validator,
 	)
 
 	return &App{
@@ -37,34 +41,44 @@ func (a *App) Run(addr string) error {
 }
 
 type repositories struct {
-	user repository.UserRepository
+	user *repository.UserRepository
 }
 
 type usecases struct {
-	user usecase.UserUsecase
+	user *usecase.UserUsecase
 }
 
-func initRepositories(db *sqlx.DB) *repositories {
+func mustInitRepositories(db *pgxpool.Pool, logger *logger.MyLogger) *repositories {
+	repository, err := repository.NewUserRepository(db, logger)
+	if err != nil {
+		panic(err)
+	}
 	return &repositories{
-		user: repository.NewUserRepository(db),
+		user: repository,
 	}
 }
 
-func initUsecases(r *repositories) *usecases {
-	return &usecases{
-		user: usecase.NewUserUsecase(r.user),
+func mustInitUsecases(r *repositories, logger *logger.MyLogger) *usecases {
+	if r == nil || logger == nil {
+		log.Fatal("couldn't init usecases: nil values in constructor")
 	}
+	user, err := usecase.NewUserUsecase(r.user, logger)
+	if err != nil {
+		log.Fatalf("couldn't init usecases: %w", err)
+	}
+
+	return &usecases{user: user}
 }
 
-func getLogLevel() slog.Level {
+func getLogLevel() logger.LoggerLevel {
 	switch os.Getenv("LOG_LEVEL") {
 	case "debug":
-		return slog.LevelDebug
-	case "info":
-		return slog.LevelInfo
-	case "error":
-		return slog.LevelError
+		return logger.Debug
+	case "prod":
+		return logger.Prod
+	case "test":
+		return logger.Test
 	default:
-		return slog.LevelInfo
+		return logger.Debug
 	}
 }

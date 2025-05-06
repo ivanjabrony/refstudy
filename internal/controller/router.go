@@ -2,15 +2,16 @@ package controller
 
 import (
 	"ivanjabrony/refstudy/docs"
-	"log/slog"
+	"ivanjabrony/refstudy/internal/logger"
 	"os"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
-func SetupRouter(logger *slog.Logger, userUsecase UserUsecase) *gin.Engine {
+func SetupRouter(logger *logger.MyLogger, userUsecase UserUsecase, validator *validator.Validate) *gin.Engine {
 	r := gin.Default()
 
 	// timeoutTime := os.Getenv("TIMEOUT_TIME")
@@ -25,7 +26,7 @@ func SetupRouter(logger *slog.Logger, userUsecase UserUsecase) *gin.Engine {
 	// r.Use(middleware.LoggerMiddleware(logger))
 	// r.Use(middleware.TimeoutMiddleware(time.Duration(timeoutParsed) * time.Second))
 
-	userCotroller := NewUserController(userUsecase)
+	userCotroller := NewUserController(userUsecase, validator)
 
 	port := os.Getenv("PORT")
 	if port == "" {

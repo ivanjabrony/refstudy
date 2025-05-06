@@ -35,6 +35,11 @@ definitions:
         type: integer
       total_pages:
         type: integer
+    required:
+    - page
+    - page_size
+    - total
+    - total_pages
     type: object
   dto.UpdateUserDto:
     properties:

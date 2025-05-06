@@ -238,6 +238,12 @@ const docTemplate = `{
         },
         "dto.PaginatedUsersDto": {
             "type": "object",
+            "required": [
+                "page",
+                "page_size",
+                "total",
+                "total_pages"
+            ],
             "properties": {
                 "data": {
                     "type": "array",

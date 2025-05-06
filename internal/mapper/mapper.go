@@ -58,7 +58,7 @@ func MapToUserDto(model *model.User) *dto.UserDto {
 		return &dto.UserDto{
 			Id:       model.Id,
 			Username: model.Username,
-			Email:    model.Password,
+			Email:    model.Email,
 			Password: model.Password,
 		}
 	}

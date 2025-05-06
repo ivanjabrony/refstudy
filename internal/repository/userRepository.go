@@ -2,215 +2,230 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
+	"ivanjabrony/refstudy/internal/logger"
 	"ivanjabrony/refstudy/internal/model"
+	"time"
 
 	"github.com/Masterminds/squirrel"
-	"github.com/jmoiron/sqlx"
+	"github.com/jackc/pgx/v5"
 )
 
-type UserRepository struct {
-	db *sqlx.DB
+type PgxIface interface {
+	Begin(context.Context) (pgx.Tx, error)
+	Close()
 }
 
-func NewUserRepository(db *sqlx.DB) UserRepository {
-	return UserRepository{db}
+type UserRepository struct {
+	pool    PgxIface
+	builder squirrel.StatementBuilderType
+	logger  *logger.MyLogger
+}
+
+func NewUserRepository(pool PgxIface, logger *logger.MyLogger) (*UserRepository, error) {
+	if pool == nil {
+		return nil, errors.New("nil values in UserRepository constructor")
+	}
+
+	return &UserRepository{
+		pool:    pool,
+		builder: squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar),
+		logger:  logger,
+	}, nil
 }
 
 func (repo UserRepository) CreateUser(ctx context.Context, user *model.User) (*model.User, error) {
-	tx, err := repo.db.BeginTxx(ctx, nil)
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
 	defer func() {
-		var e error
-		if err == nil {
-			e = tx.Commit()
-		} else {
-			e = tx.Rollback()
-		}
-
-		if err == nil && e != nil {
-			err = fmt.Errorf("finishing transaction: %w", e)
+		if err != nil {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if rbErr := tx.Rollback(rollbackCtx); rbErr != nil {
+				err = fmt.Errorf("rollback failed: %v, original error: %w", rbErr, err)
+			}
 		}
 	}()
 
-	query, args, err := squirrel.
+	query, args, err := repo.builder.
 		Insert("users").
 		Columns("username", "email", "password").
-		Values(
-			user.Username,
-			user.Email,
-			user.Password,
-		).
-		PlaceholderFormat(squirrel.Dollar).
+		Values(user.Username, user.Email, user.Password).
 		Suffix("RETURNING id").
 		ToSql()
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to build query: %w", err)
 	}
 
-	err = tx.QueryRowxContext(ctx, query, args...).Scan(&user.Id)
+	err = tx.QueryRow(ctx, query, args...).Scan(&user.Id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("user not inserted: %w", err)
-		}
-		return nil, fmt.Errorf("failed to execute query: %w", err)
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit failed: %w", err)
 	}
 
 	return user, nil
 }
 
 func (repo UserRepository) GetUserById(ctx context.Context, id int32) (*model.User, error) {
-	tx, err := repo.db.BeginTxx(ctx, nil)
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
 	defer func() {
-		var e error
-		if err == nil {
-			e = tx.Commit()
-		} else {
-			e = tx.Rollback()
-		}
-
-		if err == nil && e != nil {
-			err = fmt.Errorf("finishing transaction: %w", e)
+		if err != nil {
+			rollbackCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			if rbErr := tx.Rollback(rollbackCtx); rbErr != nil {
+				err = fmt.Errorf("rollback failed: %v, original error: %w", rbErr, err)
+			}
 		}
 	}()
 
-	query, args, err := squirrel.
-		Select("id, username", "email", "password").
+	query, args, err := repo.builder.
+		Select("id", "username", "email", "password").
 		From("users").
-		PlaceholderFormat(squirrel.Dollar).
 		Where(squirrel.Eq{"id": id}).
 		ToSql()
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to build query: %w", err)
 	}
 
 	var user model.User
-	err = tx.SelectContext(ctx, &user, query, args...)
-
+	err = tx.QueryRow(ctx, query, args...).Scan(&user.Id, &user.Username, &user.Email, &user.Password)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("user not inserted: %w", err)
-		}
-		return nil, fmt.Errorf("failed to execute query: %w", err)
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit failed: %w", err)
 	}
 
 	return &user, nil
 }
 
-func (repo UserRepository) GetAllUsers(ctx context.Context) ([]model.User, error) {
-	tx, err := repo.db.BeginTxx(ctx, nil)
+func (repo *UserRepository) GetAllUsers(ctx context.Context) ([]model.User, error) {
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
 	defer func() {
-		var e error
-		if err == nil {
-			e = tx.Commit()
+		if err != nil {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if rbErr := tx.Rollback(rollbackCtx); rbErr != nil {
+				err = fmt.Errorf("rollback failed: %v, original error: %w", rbErr, err)
+			}
 		} else {
-			e = tx.Rollback()
-		}
-
-		if err == nil && e != nil {
-			err = fmt.Errorf("finishing transaction: %w", e)
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				err = fmt.Errorf("commit failed: %w", commitErr)
+			}
 		}
 	}()
 
-	query, args, err := squirrel.
-		Select("id, username", "email", "password").
+	query, args, err := repo.builder.
+		Select("id", "username", "email", "password").
 		From("users").
-		PlaceholderFormat(squirrel.Dollar).
 		ToSql()
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to build query: %w", err)
 	}
-
-	var users []model.User
-
-	err = tx.SelectContext(ctx, &users, query, args...)
-
+	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	var users []model.User
+	for rows.Next() {
+		var user model.User
+		if err := rows.Scan(
+			&user.Id,
+			&user.Username,
+			&user.Email,
+			&user.Password,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+		users = append(users, user)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
 	}
 
 	return users, nil
 }
 
-func (repo UserRepository) UpdateUser(ctx context.Context, user *model.User) error {
-	tx, err := repo.db.BeginTxx(ctx, nil)
+func (repo *UserRepository) UpdateUser(ctx context.Context, user *model.User) error {
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
 	defer func() {
-		var e error
-		if err == nil {
-			e = tx.Commit()
+		if err != nil {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if rbErr := tx.Rollback(rollbackCtx); rbErr != nil {
+				err = fmt.Errorf("rollback failed: %v, original error: %w", rbErr, err)
+			}
 		} else {
-			e = tx.Rollback()
-		}
-
-		if err == nil && e != nil {
-			err = fmt.Errorf("finishing transaction: %w", e)
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				err = fmt.Errorf("commit failed: %w", commitErr)
+			}
 		}
 	}()
 
-	query, args, err := squirrel.
+	query, args, err := repo.builder.
 		Update("users").
 		Set("username", user.Username).
 		Set("email", user.Email).
 		Set("password", user.Password).
 		Where(squirrel.Eq{"id": user.Id}).
-		PlaceholderFormat(squirrel.Dollar).
 		ToSql()
-
 	if err != nil {
 		return fmt.Errorf("failed to build query: %w", err)
 	}
 
-	result, err := tx.ExecContext(ctx, query, args...)
+	result, err := tx.Exec(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to execute query: %w", err)
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
+	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
 		return fmt.Errorf("user with id %d not found", user.Id)
 	}
+
 	return nil
 }
-func (repo UserRepository) DeleteUserById(ctx context.Context, id int32) error {
-	tx, err := repo.db.BeginTxx(ctx, nil)
+
+func (repo *UserRepository) DeleteUserById(ctx context.Context, id int32) error {
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
 	defer func() {
-		var e error
-		if err == nil {
-			e = tx.Commit()
+		if err != nil {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if rbErr := tx.Rollback(rollbackCtx); rbErr != nil {
+				err = fmt.Errorf("rollback failed: %v, original error: %w", rbErr, err)
+			}
 		} else {
-			e = tx.Rollback()
-		}
-
-		if err == nil && e != nil {
-			err = fmt.Errorf("finishing transaction: %w", e)
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				err = fmt.Errorf("commit failed: %w", commitErr)
+			}
 		}
 	}()
 
@@ -219,17 +234,16 @@ func (repo UserRepository) DeleteUserById(ctx context.Context, id int32) error {
 		Where(squirrel.Eq{"id": id}).
 		PlaceholderFormat(squirrel.Dollar).
 		ToSql()
-
-	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("failed to execute query: %w", err)
+		return fmt.Errorf("failed to build query: %w", err)
 	}
 
-	rowsAffected, err := result.RowsAffected()
+	result, err := tx.Exec(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
+		return fmt.Errorf("failed to delete user: %w", err)
 	}
 
+	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
 		return fmt.Errorf("user with id %d not found", id)
 	}

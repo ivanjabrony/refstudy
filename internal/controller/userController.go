@@ -7,10 +7,12 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 )
 
 type UserCotroller struct {
 	userService UserUsecase
+	validator   *validator.Validate
 }
 
 type UserUsecase interface {
@@ -25,8 +27,10 @@ type UserUsecase interface {
 	DeleteUserById(context.Context, int32) error
 }
 
-func NewUserController(userService UserUsecase) *UserCotroller {
-	return &UserCotroller{userService: userService}
+func NewUserController(userService UserUsecase, validator *validator.Validate) *UserCotroller {
+	return &UserCotroller{
+		userService: userService,
+		validator:   validator}
 }
 
 // GetUser godoc
@@ -104,6 +108,16 @@ func (pc *UserCotroller) GetAllUsers(c *gin.Context) {
 		Total:      total,
 		TotalPages: totalPages,
 	}
+	// err = pc.validator.StructCtx(c.Request.Context(), response)
+	// if err != nil {
+	// 	for _, e := range err.(validator.ValidationErrors) {
+	// 		fmt.Println(
+	// 			"Error in field:", e.Field(),
+	// 			"Rule abrupted:", e.Tag(),
+	// 			"Current value:", e.Value(),
+	// 		)
+	// 	}
+	// }
 	c.JSON(http.StatusOK, response)
 }
 
